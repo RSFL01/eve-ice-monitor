@@ -1,0 +1,25 @@
+# Python cache/artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+
+# Packaging
+build/
+dist/
+*.egg-info/
+
+# Local config/state
+.env
+ice_monitor_state.json
+esi_tokens.json
+startup.bat
+startup.vbs
+logs/
+
+# IDE
+.vscode/*.code-snippets
