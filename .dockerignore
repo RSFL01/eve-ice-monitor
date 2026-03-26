@@ -1,0 +1,10 @@
+.env
+esi_tokens.json
+ice_monitor_state.json
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+tests/
+.git
+*.md
