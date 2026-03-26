@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import time
 
 from .config import load_config
@@ -33,13 +34,12 @@ def main() -> int:
     config = load_config()
 
     if args.bot:
-        import os
         from .bot import run_bot
         token = os.getenv("DISCORD_BOT_TOKEN", "").strip()
         if not token:
             print("Error: DISCORD_BOT_TOKEN must be set")
             return 1
-        run_bot(token, config.state_file, config.respawn_hours)
+        run_bot(token, config.state_file, config.respawn_hours, config.discord_webhook_url)
         return 0
 
     if args.login:
@@ -56,7 +56,17 @@ def main() -> int:
         send_discord_alert(config.discord_webhook_url, "Test Message", "Ice monitor is configured and working.")
         return 0
 
-    monitor = IceMonitor(system_name=args.system, config=config)
+    claude_client = None
+    api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    if api_key:
+        try:
+            import anthropic
+            claude_client = anthropic.Anthropic(api_key=api_key)
+            logging.getLogger("ice-monitor").info("Claude (Haiku) enabled for monitor intelligence")
+        except ImportError:
+            logging.getLogger("ice-monitor").warning("anthropic package not installed — Claude monitor features disabled")
+
+    monitor = IceMonitor(system_name=args.system, config=config, claude=claude_client)
 
     if args.once:
         monitor.run_once()

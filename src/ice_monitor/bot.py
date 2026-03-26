@@ -3,41 +3,94 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import anthropic
 import discord
 
+from .discord import send_discord_alert
+from .prices import MARKET_HUBS, TRACKED_ITEMS, fetch_price_data
 from .state import belt_duration_summary, format_time, load_state, record_belt_duration, save_state
 
 log = logging.getLogger("ice-monitor")
 
-KEYWORDS = {"next belt", "ice belt", "spawn", "when is", "next ice", "belt"}
+BELT_QUERY_KEYWORDS = {"next belt", "ice belt", "spawn", "when is", "next ice", "belt"}
 BELT_DOWN_KEYWORDS = {"belt down", "belt cleared", "belt is down", "belts down", "ice cleared", "ice is down"}
-HELP_KEYWORDS = {
-    "what do you do", "what are you", "how do you work", "what can you do",
-    "help", "commands", "who are you", "are you ai", "are you an ai",
-    "are you a bot", "are you real", "who made you",
-}
-PRICE_KEYWORDS = {"price", "prices", "how much", "market", "isotopes", "strontium", "liquid ozone"}
-
-# Tracks users waiting for a hub choice: {user_id: channel_id}
-_awaiting_hub: dict[int, int] = {}
 
 SYSTEM_PROMPT = (
     "You are @ICE#8646, an AI-powered Discord bot built with **Claude Code** by Anthropic, "
     "purpose-built for an EVE Online corporation to monitor the ice belt in Riavayed (system ID 30002993). "
     "You are not a human. When asked, confirm you are an AI powered by Claude, built with Claude Code. "
     "Your Discord name is @ICE#8646.\n\n"
-    "What you do: You monitor Riavayed for ice belt activity using two signals — "
-    "public ESI activity stats (jumps and NPC kills per hour) and an authenticated mining ledger feed. "
-    "You send Discord alerts when the belt spawns, clears, and 15 minutes before expected respawn (~6h cycle). "
-    "You also track market prices for Helium Isotopes, Strontium Clathrates, and Liquid Ozone across major trade hubs. "
-    "Commands: !timer (belt status), !avgtime (belt duration history), !prices (market prices), "
-    "'belt down/cleared' (manual clear).\n\n"
+    "What you do: Monitor Riavayed for ice belt activity using ESI signals (jumps, NPC kills) "
+    "and an authenticated mining ledger feed. Alert on belt spawns, clears, and respawn windows (~6h cycle). "
+    "Track market prices for Helium Isotopes, Strontium Clathrates, and Liquid Ozone at major trade hubs.\n\n"
+    "You have tools to fetch live data — use them. Never guess belt status or prices; always call the tool first. "
     "Style: concise, EVE terminology, Discord markdown sparingly, max 4 sentences unless showing data."
 )
+
+TOOLS = [
+    {
+        "name": "get_belt_status",
+        "description": "Get current ice belt status and respawn timer for Riavayed",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_price_data",
+        "description": (
+            "Fetch live market sell prices for Helium Isotopes, Strontium Clathrates, and Liquid Ozone"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "hub": {
+                    "type": "string",
+                    "description": "Trade hub to query, or 'all' for all hubs",
+                    "enum": ["jita", "amarr", "dodixie", "rens", "all"],
+                }
+            },
+            "required": ["hub"],
+        },
+    },
+    {
+        "name": "mark_belt_cleared",
+        "description": (
+            "Mark the Riavayed ice belt as cleared and set the 6h respawn timer. "
+            "Use only when a user explicitly reports the belt is down/cleared."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_duration_history",
+        "description": "Get historical statistics on how long ice belts have lasted in Riavayed",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+]
+
+_CONV_TTL_SECONDS = 1800    # 30-min idle resets conversation
+_MAX_CONV_MESSAGES = 24     # ~12 back-and-forth turns
+
+
+@dataclass
+class _Conversation:
+    messages: list = field(default_factory=list)
+    last_active: float = field(default_factory=time.monotonic)
+
+
+_conversations: dict[int, _Conversation] = {}
+
+
+def _get_history(user_id: int) -> list:
+    """Return the live messages list for user_id, resetting if stale."""
+    conv = _conversations.get(user_id)
+    if conv is None or (time.monotonic() - conv.last_active) > _CONV_TTL_SECONDS:
+        _conversations[user_id] = _Conversation()
+    else:
+        _conversations[user_id].last_active = time.monotonic()
+    return _conversations[user_id].messages
 
 
 def _belt_status_summary(state_file: Path) -> str:
@@ -58,27 +111,24 @@ def _belt_status_summary(state_file: Path) -> str:
         hours, remainder = divmod(total_seconds, 3600)
         minutes = remainder // 60
         countdown = f"{hours}h {minutes}m" if hours else f"{minutes}m"
-        return (
-            f"The ice belt is DOWN. Next spawn in approximately {countdown} ({format_time(respawn)})."
-        )
+        return f"The ice belt is DOWN. Next spawn in approximately {countdown} ({format_time(respawn)})."
     return "Ice belt status is unknown — no spawn timer set yet."
 
 
-def _full_context(state_file: Path) -> str:
-    return (
-        f"Belt status: {_belt_status_summary(state_file)}\n"
-        f"Duration history: {belt_duration_summary(load_state(state_file))}"
-    )
-
-
-async def _claude(user_message: str, context: str, client: anthropic.AsyncAnthropic, max_tokens: int = 400) -> str:
-    response = await client.messages.create(
-        model="claude-opus-4-6",
-        max_tokens=max_tokens,
-        system=f"{SYSTEM_PROMPT}\n\nCurrent context:\n{context}",
-        messages=[{"role": "user", "content": user_message}],
-    )
-    return response.content[0].text
+def _format_price_data(data: dict, hubs: list[str]) -> str:
+    lines = []
+    for hub in hubs:
+        lines.append(f"{hub.upper()}:")
+        for item in TRACKED_ITEMS:
+            d = data[hub].get(item)
+            if d and d["min"] is not None:
+                trend = f"{d['trend_pct']:+.1f}%" if d["trend_pct"] is not None else "N/A"
+                lines.append(
+                    f"  {item}: min={d['min']:,.0f}  max={d['max']:,.0f}  avg={d['avg']:,.0f} ISK  7d={trend}"
+                )
+            else:
+                lines.append(f"  {item}: no data")
+    return "\n".join(lines)
 
 
 def _handle_belt_down(state_file: Path, respawn_hours: int) -> str:
@@ -99,9 +149,64 @@ def _handle_belt_down(state_file: Path, respawn_hours: int) -> str:
     )
 
 
-def run_bot(token: str, state_file: Path, respawn_hours: int = 6) -> None:
-    from .prices import fetch_price_data, parse_hub_choice, MARKET_HUBS
+async def _execute_tool(tool_name: str, tool_input: dict, state_file: Path, respawn_hours: int) -> str:
+    if tool_name == "get_belt_status":
+        return _belt_status_summary(state_file)
+    if tool_name == "get_price_data":
+        hub = tool_input["hub"]
+        hubs = list(MARKET_HUBS.keys()) if hub == "all" else [hub]
+        loop = asyncio.get_running_loop()
+        data = await loop.run_in_executor(None, fetch_price_data, hubs)
+        return _format_price_data(data, hubs)
+    if tool_name == "mark_belt_cleared":
+        return _handle_belt_down(state_file, respawn_hours)
+    if tool_name == "get_duration_history":
+        return belt_duration_summary(load_state(state_file))
+    return f"Unknown tool: {tool_name}"
 
+
+async def _claude_agentic(
+    user_id: int,
+    user_message: str,
+    client: anthropic.AsyncAnthropic,
+    state_file: Path,
+    respawn_hours: int,
+    max_tokens: int = 600,
+) -> str:
+    history = _get_history(user_id)
+    history.append({"role": "user", "content": user_message})
+
+    while True:
+        response = await client.messages.create(
+            model="claude-opus-4-6",
+            max_tokens=max_tokens,
+            system=SYSTEM_PROMPT,
+            tools=TOOLS,
+            messages=history,
+        )
+
+        if response.stop_reason != "tool_use":
+            text = next((b.text for b in response.content if hasattr(b, "text")), "")
+            history.append({"role": "assistant", "content": response.content})
+            if len(history) > _MAX_CONV_MESSAGES:
+                history[:] = history[-_MAX_CONV_MESSAGES:]
+                while history and history[0]["role"] != "user":
+                    history.pop(0)
+            return text
+
+        # Execute all tool calls, then loop back for Claude's next step
+        history.append({"role": "assistant", "content": response.content})
+        tool_results = []
+        for block in response.content:
+            if block.type != "tool_use":
+                continue
+            result = await _execute_tool(block.name, block.input, state_file, respawn_hours)
+            log.info("Tool: %s(%s) → %s", block.name, block.input, result[:80])
+            tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": result})
+        history.append({"role": "user", "content": tool_results})
+
+
+def run_bot(token: str, state_file: Path, respawn_hours: int = 6, webhook_url: str = "") -> None:
     api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
     if not api_key:
         log.warning("ANTHROPIC_API_KEY not set — Claude responses will be unavailable")
@@ -115,6 +220,8 @@ def run_bot(token: str, state_file: Path, respawn_hours: int = 6) -> None:
     @client.event
     async def on_ready():
         log.info("Discord bot online as %s", client.user)
+        if webhook_url:
+            send_discord_alert(webhook_url, "ICE#8646 Online", "I am now awake and watching ice.")
 
     @client.event
     async def on_message(message):
@@ -124,69 +231,26 @@ def run_bot(token: str, state_file: Path, respawn_hours: int = 6) -> None:
         content = message.content.lower()
         user_id = message.author.id
         mentioned = client.user in message.mentions
+        log.debug("on_message: user=%s mentioned=%s content=%r", message.author, mentioned, content[:80])
 
-        # ── Pending hub choice ────────────────────────────────────────────────
-        if user_id in _awaiting_hub:
-            hubs = parse_hub_choice(content)
-            if hubs:
-                del _awaiting_hub[user_id]
-                async with message.channel.typing():
-                    data = await asyncio.get_event_loop().run_in_executor(None, fetch_price_data, hubs)
-                    if claude:
-                        from .prices import TRACKED_ITEMS
-                        hub_labels = ", ".join(h.capitalize() for h in hubs)
-                        raw = []
-                        for hub in hubs:
-                            raw.append(f"\n{hub.upper()}:")
-                            for item in TRACKED_ITEMS:
-                                d = data[hub].get(item)
-                                if d and d["min"] is not None:
-                                    trend = f"{d['trend_pct']:+.1f}%" if d["trend_pct"] is not None else "N/A"
-                                    raw.append(f"  {item}: min={d['min']:,.2f} max={d['max']:,.2f} avg={d['avg']:,.2f} ISK  7d={trend}")
-                                else:
-                                    raw.append(f"  {item}: no data")
-                        ctx = _full_context(state_file) + "\n\nRaw price data:\n" + "\n".join(raw)
-                        reply = await _claude(f"Format price data for {hub_labels}", ctx, claude, max_tokens=600)
-                    else:
-                        lines = []
-                        for hub in hubs:
-                            lines.append(f"**{hub.upper()}**")
-                            for item, d in data[hub].items():
-                                if d and d["min"] is not None:
-                                    trend = f"{d['trend_pct']:+.1f}%" if d["trend_pct"] is not None else "N/A"
-                                    lines.append(f"  **{item}**: {d['min']:,.0f} / {d['max']:,.0f} / {d['avg']:,.0f} ISK  7d: {trend}")
-                                else:
-                                    lines.append(f"  **{item}**: no data")
-                        reply = "\n".join(lines)
-                await message.reply(reply)
+        # @mention → full agentic response with tool use + conversation memory
+        if mentioned:
+            if not claude:
+                await message.reply("⚠️ ANTHROPIC_API_KEY not configured.")
                 return
-            else:
-                del _awaiting_hub[user_id]
-
-        # ── @ICE mentioned — everything goes through Claude ───────────────────
-        if mentioned and claude:
             async with message.channel.typing():
-                # Execute state-changing commands first, add result to context
-                extra = ""
-                if any(kw in content for kw in BELT_DOWN_KEYWORDS):
-                    result = _handle_belt_down(state_file, respawn_hours)
-                    extra = f"\nBelt-down command was just executed. Result:\n{result}"
-                elif content.strip().lstrip("<@0123456789>").strip().startswith("!avgtime"):
-                    extra = f"\nDuration stats:\n{belt_duration_summary(load_state(state_file))}"
-                elif content.strip().lstrip("<@0123456789>").strip().startswith("!prices") or any(kw in content for kw in PRICE_KEYWORDS):
-                    _awaiting_hub[user_id] = message.channel.id
-                    hub_list = ", ".join(h.capitalize() for h in MARKET_HUBS)
-                    prompt = f"Ask the user which market hub they want prices for. Options: {hub_list}, or All."
-                    reply = await _claude(prompt, _full_context(state_file), claude)
-                    await message.reply(reply)
-                    return
-
-                ctx = _full_context(state_file) + extra
-                reply = await _claude(message.content, ctx, claude)
+                try:
+                    reply = await _claude_agentic(
+                        user_id, message.content, claude, state_file, respawn_hours
+                    )
+                except Exception as exc:
+                    log.error("Claude agentic error for user %s: %s", user_id, exc)
+                    _conversations.pop(user_id, None)
+                    reply = "Something went wrong — conversation reset. Try again."
             await message.reply(reply)
             return
 
-        # ── Non-@mention command routing ──────────────────────────────────────
+        # Non-@mention: direct command routing
         if any(kw in content for kw in BELT_DOWN_KEYWORDS):
             await message.reply(_handle_belt_down(state_file, respawn_hours))
 
@@ -196,23 +260,29 @@ def run_bot(token: str, state_file: Path, respawn_hours: int = 6) -> None:
         elif content.strip().startswith("!avgtime"):
             if claude:
                 async with message.channel.typing():
-                    ctx = _full_context(state_file)
-                    reply = await _claude("Interpret and summarise the belt duration history.", ctx, claude)
+                    reply = await _claude_agentic(
+                        user_id, "Summarise the belt duration history.", claude, state_file, respawn_hours
+                    )
                 await message.reply(reply)
             else:
                 await message.reply(belt_duration_summary(load_state(state_file)))
 
-        elif content.strip().startswith("!prices") or any(kw in content for kw in PRICE_KEYWORDS):
-            _awaiting_hub[user_id] = message.channel.id
-            hub_list = ", ".join(h.capitalize() for h in MARKET_HUBS)
-            await message.reply(f"Which market hub would you like prices for?\n**{hub_list}, or All**")
-
-        elif any(kw in content for kw in KEYWORDS) or any(kw in content for kw in HELP_KEYWORDS):
+        elif content.strip().startswith("!prices"):
             if claude:
                 async with message.channel.typing():
-                    reply = await _claude(message.content, _full_context(state_file), claude)
+                    reply = await _claude_agentic(
+                        user_id, "Show me current prices for all market hubs.", claude, state_file, respawn_hours
+                    )
                 await message.reply(reply)
             else:
-                await message.reply("⚠️ ANTHROPIC_API_KEY not configured.")
+                await message.reply("Set ANTHROPIC_API_KEY or @mention me for prices.")
+
+        elif any(kw in content for kw in BELT_QUERY_KEYWORDS):
+            if claude:
+                async with message.channel.typing():
+                    reply = await _claude_agentic(
+                        user_id, message.content, claude, state_file, respawn_hours
+                    )
+                await message.reply(reply)
 
     client.run(token, log_handler=None)
