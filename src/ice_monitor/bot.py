@@ -194,7 +194,7 @@ async def _claude_agentic(
 
     while True:
         response = await client.messages.create(
-            model="claude-opus-4-6",
+            model="claude-haiku-4-5",
             max_tokens=max_tokens,
             system=SYSTEM_PROMPT,
             tools=active_tools,
