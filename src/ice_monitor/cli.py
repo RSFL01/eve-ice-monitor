@@ -19,6 +19,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("-T", "--test", action="store_true", help="Send a test message to the Discord webhook and exit")
     parser.add_argument("--login", action="store_true", help="Authenticate with EVE SSO and save tokens")
     parser.add_argument("--bot", action="store_true", help="Run the Discord bot listener")
+    parser.add_argument("--mcp-server", action="store_true", help="Run EVE ESI MCP server (stdio transport, for bot subprocess)")
+    parser.add_argument("--mcp-transport", default="stdio", choices=["stdio", "sse"], help="MCP transport: stdio (default) or sse (for Claude Desktop)")
     return parser.parse_args()
 
 
@@ -32,6 +34,11 @@ def main() -> int:
     )
 
     config = load_config()
+
+    if args.mcp_server:
+        from .esi_mcp_server import run_server
+        run_server(transport=args.mcp_transport)
+        return 0
 
     if args.bot:
         from .bot import run_bot

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -81,6 +82,18 @@ class _Conversation:
 
 
 _conversations: dict[int, _Conversation] = {}
+
+_mcp_session = None   # mcp.ClientSession
+_mcp_tools = None     # list[dict] in Anthropic format
+
+
+def _mcp_tool_to_anthropic(tool) -> dict:
+    return {"name": tool.name, "description": tool.description or "", "input_schema": tool.inputSchema}
+
+
+async def _execute_tool_mcp(tool_name: str, tool_input: dict) -> str:
+    result = await _mcp_session.call_tool(tool_name, tool_input)
+    return "\n".join(b.text for b in result.content if hasattr(b, "text")) or "(no result)"
 
 
 def _get_history(user_id: int) -> list:
@@ -176,12 +189,14 @@ async def _claude_agentic(
     history = _get_history(user_id)
     history.append({"role": "user", "content": user_message})
 
+    active_tools = _mcp_tools if _mcp_tools else TOOLS
+
     while True:
         response = await client.messages.create(
             model="claude-opus-4-6",
             max_tokens=max_tokens,
             system=SYSTEM_PROMPT,
-            tools=TOOLS,
+            tools=active_tools,
             messages=history,
         )
 
@@ -200,7 +215,10 @@ async def _claude_agentic(
         for block in response.content:
             if block.type != "tool_use":
                 continue
-            result = await _execute_tool(block.name, block.input, state_file, respawn_hours)
+            if _mcp_session is not None:
+                result = await _execute_tool_mcp(block.name, block.input)
+            else:
+                result = await _execute_tool(block.name, block.input, state_file, respawn_hours)
             log.info("Tool: %s(%s) → %s", block.name, block.input, result[:80])
             tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": result})
         history.append({"role": "user", "content": tool_results})
@@ -285,4 +303,30 @@ def run_bot(token: str, state_file: Path, respawn_hours: int = 6, webhook_url: s
                     )
                 await message.reply(reply)
 
-    client.run(token, log_handler=None)
+    async def _main():
+        global _mcp_session, _mcp_tools
+        from mcp import ClientSession, StdioServerParameters
+        from mcp.client.stdio import stdio_client
+
+        params = StdioServerParameters(
+            command=sys.executable,
+            args=["-m", "ice_monitor.cli", "--mcp-server"],
+            env=dict(os.environ),
+        )
+        try:
+            async with stdio_client(params) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    result = await session.list_tools()
+                    _mcp_session = session
+                    _mcp_tools = [_mcp_tool_to_anthropic(t) for t in result.tools]
+                    log.info("MCP ready — %d tools", len(_mcp_tools))
+                    try:
+                        await client.start(token, log_handler=None)
+                    finally:
+                        await client.close()
+        except Exception as e:
+            log.warning("MCP startup failed (%s) — using fallback tools", e)
+            client.run(token, log_handler=None)
+
+    asyncio.run(_main())
