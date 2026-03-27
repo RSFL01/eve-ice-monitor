@@ -295,7 +295,7 @@ def run_bot(token: str, state_file: Path, respawn_hours: int = 6, webhook_url: s
             else:
                 await message.reply("Set ANTHROPIC_API_KEY or @mention me for prices.")
 
-        elif any(kw in content for kw in BELT_QUERY_KEYWORDS):
+        elif any(kw in content for kw in BELT_QUERY_KEYWORDS) or "ice" in content or "claude" in content:
             if claude:
                 async with message.channel.typing():
                     reply = await _claude_agentic(
@@ -322,11 +322,14 @@ def run_bot(token: str, state_file: Path, respawn_hours: int = 6, webhook_url: s
                     _mcp_tools = [_mcp_tool_to_anthropic(t) for t in result.tools]
                     log.info("MCP ready — %d tools", len(_mcp_tools))
                     try:
-                        await client.start(token, log_handler=None)
+                        await client.start(token)
                     finally:
                         await client.close()
         except Exception as e:
             log.warning("MCP startup failed (%s) — using fallback tools", e)
-            client.run(token, log_handler=None)
+            try:
+                await client.start(token)
+            finally:
+                await client.close()
 
     asyncio.run(_main())
