@@ -223,19 +223,20 @@ def get_system_kills() -> str:
 
 @server.tool()
 def search_eve(query: str, categories: str = "character,corporation,alliance,solar_system,inventory_type") -> str:
-    """Search EVE Online for characters, corporations, alliances, systems, or items.
+    """Search EVE Online for characters, corporations, alliances, systems, or items by name.
 
     categories: comma-separated list from: character, corporation, alliance, inventory_type, solar_system, station
+    Uses /universe/ids/ for reliable name-to-ID resolution.
     """
     try:
-        cat_list = [c.strip() for c in categories.split(",")]
-        data = _esi_get("/search/", params={"categories": ",".join(cat_list), "search": query, "strict": "false"})
+        data = _esi_post("/universe/ids/", [query])
         if not data:
             return f"No results for '{query}'."
         lines = []
-        for cat, ids in data.items():
-            if ids:
-                lines.append(f"{cat}: {ids[:10]} {'(and more...)' if len(ids) > 10 else ''}")
+        for cat, items in data.items():
+            if items:
+                for item in items[:10]:
+                    lines.append(f"{cat}: {item.get('name')} (id: {item.get('id')})")
         return "\n".join(lines) if lines else f"No results for '{query}'."
     except Exception as exc:
         return f"Error searching: {exc}"

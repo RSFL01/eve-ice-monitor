@@ -206,8 +206,20 @@ async def _claude_agentic(
             history.append({"role": "assistant", "content": response.content})
             if len(history) > _MAX_CONV_MESSAGES:
                 history[:] = history[-_MAX_CONV_MESSAGES:]
-                while history and history[0]["role"] != "user":
-                    history.pop(0)
+                # Drop from the front until we land on a clean user text message
+                # (tool_result messages need their matching tool_use still in history)
+                while history:
+                    first = history[0]
+                    if first["role"] != "user":
+                        history.pop(0)
+                        continue
+                    c = first.get("content", "")
+                    if isinstance(c, list) and c and isinstance(c[0], dict) and c[0].get("type") == "tool_result":
+                        history.pop(0)  # orphaned tool_result — drop it and its tool_use partner
+                        if history and history[0]["role"] == "assistant":
+                            history.pop(0)
+                        continue
+                    break
             return text
 
         # Execute all tool calls, then loop back for Claude's next step
