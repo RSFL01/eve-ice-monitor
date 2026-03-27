@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import sys
 import time
 from dataclasses import dataclass, field
@@ -248,7 +249,11 @@ def run_bot(token: str, state_file: Path, respawn_hours: int = 6, webhook_url: s
 
         content = message.content.lower()
         user_id = message.author.id
-        mentioned = client.user in message.mentions
+        mentioned = (
+            client.user in message.mentions
+            or bool(re.search(r'\bclaude\b', content))
+            or bool(re.search(r'\bice\b', content))
+        )
         log.debug("on_message: user=%s mentioned=%s content=%r", message.author, mentioned, content[:80])
 
         # @mention → full agentic response with tool use + conversation memory
