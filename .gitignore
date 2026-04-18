@@ -21,5 +21,15 @@ startup.bat
 startup.vbs
 logs/
 
-# IDE
-.vscode/*.code-snippets
+# IDE / editor
+.vscode/
+.claude/
+
+# Test / coverage
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

@@ -11,7 +11,6 @@ import webbrowser
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from typing import Optional
 
 import requests
 
@@ -49,13 +48,13 @@ def save_tokens(path: Path, data: TokenData) -> None:
     )
 
 
-def load_tokens(path: Path) -> Optional[TokenData]:
+def load_tokens(path: Path) -> TokenData | None:
     if not path.exists():
         return None
     return TokenData(**json.loads(path.read_text(encoding="utf-8")))
 
 
-def get_valid_token(client_id: str, client_secret: str, path: Path) -> Optional[str]:
+def get_valid_token(client_id: str, client_secret: str, path: Path) -> str | None:
     """Return a valid access token, refreshing if within 60 s of expiry."""
     data = load_tokens(path)
     if data is None:
@@ -124,7 +123,7 @@ def do_login(client_id: str, client_secret: str, token_file: Path) -> TokenData:
     server = HTTPServer(("localhost", 65010), _Handler)
     server.timeout = 120
 
-    print(f"\nOpening browser for EVE SSO login...")
+    print("\nOpening browser for EVE SSO login...")
     print(f"If browser doesn't open, visit:\n{auth_url}\n")
     webbrowser.open(auth_url)
     server.handle_request()
