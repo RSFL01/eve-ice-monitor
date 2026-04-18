@@ -1,10 +1,8 @@
 """EVE Online ESI MCP server — exposes ~35 ESI tools via FastMCP."""
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 
 import requests
 from mcp.server.fastmcp import FastMCP
@@ -62,14 +60,14 @@ def _get_config():
     return load_config()
 
 
-def _get_token() -> Optional[str]:
+def _get_token() -> str | None:
     cfg = _get_config()
     if not cfg.esi_client_id or not cfg.esi_client_secret:
         return None
     return get_valid_token(cfg.esi_client_id, cfg.esi_client_secret, cfg.esi_token_file)
 
 
-def _require_token() -> tuple[Optional[str], Optional[int], str]:
+def _require_token() -> tuple[str | None, int | None, str]:
     """Return (token, character_id, error_string). error_string is empty on success."""
     token = _get_token()
     if not token:
@@ -520,8 +518,6 @@ def get_corporation_members() -> str:
     if err:
         return err
     try:
-        cfg = _get_config()
-        tokens = load_tokens(cfg.esi_token_file)
         # Get the character's corp first
         char_data = _esi_get(f"/characters/{char_id}/", auth_token=token)
         corp_id = char_data.get("corporation_id")
@@ -621,11 +617,11 @@ def get_sovereignty_map() -> str:
                 alliance_counts[aid] = alliance_counts.get(aid, 0) + 1
         top_alliances = sorted(alliance_counts.items(), key=lambda x: x[1], reverse=True)[:10]
         lines = [
-            f"Sovereignty map summary:",
+            "Sovereignty map summary:",
             f"  Total systems claimed: {len(claimed):,}",
             f"  Contested systems: {len(contested):,}",
-            f"",
-            f"Top 10 alliances by system count:",
+            "",
+            "Top 10 alliances by system count:",
         ]
         for aid, count in top_alliances:
             lines.append(f"  Alliance {aid}: {count:,} systems")

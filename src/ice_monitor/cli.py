@@ -9,7 +9,6 @@ from .config import load_config
 from .monitor import IceMonitor
 
 
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="EVE ice monitor")
     parser.add_argument("--system", default="Riavayed", help="Solar system to monitor")

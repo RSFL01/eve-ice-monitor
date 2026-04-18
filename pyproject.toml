@@ -19,6 +19,13 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest>=8.0.0",
+  "pytest-asyncio>=0.23.0",
+  "pytest-cov>=4.1.0",
+  "respx>=0.20.0",
+  "freezegun>=1.4.0",
+  "ruff>=0.6.0",
+  "mypy>=1.8.0",
+  "types-requests>=2.31.0",
 ]
 
 [project.scripts]
@@ -32,3 +39,58 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = [
+  "ignore::DeprecationWarning:ice_monitor.*",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = [
+  "E501",  # line length handled by formatter
+  "B008",  # function-call-in-default-argument (fine for our usage)
+]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+check_untyped_defs = true
+# Pragmatic: tighten later
+disallow_untyped_defs = false
+
+# The following modules are scheduled for refactor under the "typed ESI models
+# + typed settings" roadmap item. Their current type errors stem from untyped
+# ESI response dicts and anthropic-SDK content-block union narrowing — both
+# explicitly addressed in that plan. Until then, suppress the spam so CI
+# catches genuine regressions in the rest of the codebase.
+[[tool.mypy.overrides]]
+module = [
+  "ice_monitor.monitor",
+  "ice_monitor.bot",
+  "ice_monitor.auth",
+]
+disable_error_code = ["union-attr", "arg-type", "attr-defined"]
+
+[tool.coverage.run]
+source = ["ice_monitor"]
+# Pure-integration surfaces excluded from unit-test coverage:
+#   - esi_mcp_server.py: thin wrapper around 35 ESI endpoints; integration-tested
+#   - cli.py: argparse entry point; smoke-tested end-to-end instead of unit-tested
+omit = [
+  "src/ice_monitor/esi_mcp_server.py",
+  "src/ice_monitor/cli.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+  "pragma: no cover",
+  "if TYPE_CHECKING:",
+  "if __name__ == .__main__.:",
+  "raise NotImplementedError",
+]

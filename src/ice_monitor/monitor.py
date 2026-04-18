@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
 import json as _json
 import logging
-from typing import TYPE_CHECKING
+from datetime import date, datetime, timedelta, timezone
+from typing import TYPE_CHECKING, Any
 
 import requests
 
@@ -71,7 +71,7 @@ class IceMonitor:
             jumps = next(
                 (e.get("ship_jumps", e.get("jumps", 0)) for e in jumps_resp.json() if e.get("system_id") == self.system_id), 0
             )
-            kills = next(
+            kills: dict[str, Any] = next(
                 (e for e in kills_resp.json() if e["system_id"] == self.system_id), {}
             )
             return jumps, kills.get("npc_kills", 0), kills.get("ship_kills", 0)

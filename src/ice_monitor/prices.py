@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+
 import requests
 
 log = logging.getLogger("ice-monitor")
@@ -33,9 +34,14 @@ def _get_sell_orders(region_id: int, system_id: int, type_id: int) -> list[dict]
     orders: list[dict] = []
     page = 1
     while True:
+        params: dict[str, str | int] = {
+            "type_id": type_id,
+            "order_type": "sell",
+            "page": page,
+        }
         resp = requests.get(
             f"{ESI_BASE}/markets/{region_id}/orders/",
-            params={"type_id": type_id, "order_type": "sell", "page": page},
+            params=params,
             timeout=15,
         )
         resp.raise_for_status()
@@ -75,10 +81,10 @@ def _item_summary(region_id: int, system_id: int, type_id: int) -> dict:
     return {"min": sell_min, "max": sell_max, "avg": sell_avg, "trend_pct": trend_pct}
 
 
-def fetch_price_data(hubs: list[str]) -> dict[str, dict[str, dict]]:
+def fetch_price_data(hubs: list[str]) -> dict[str, dict[str, dict | None]]:
     """Return {hub: {item_name: {min, max, avg, trend_pct}}}."""
     type_ids = _resolve_type_ids(TRACKED_ITEMS)
-    result: dict[str, dict[str, dict]] = {}
+    result: dict[str, dict[str, dict | None]] = {}
     for hub in hubs:
         region_id, system_id = MARKET_HUBS[hub]
         result[hub] = {}
