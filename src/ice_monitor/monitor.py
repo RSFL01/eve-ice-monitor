@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
-import logging
-import requests
-
-import anthropic
 import json as _json
+import logging
+from typing import TYPE_CHECKING
+
+import requests
 
 from .auth import get_valid_token, load_tokens
 from .config import MonitorConfig
 from .discord import send_discord_alert
 from .state import format_time, load_state, record_belt_duration, save_state, utc_now_iso
+
+if TYPE_CHECKING:
+    import anthropic
 
 
 ESI_BASE = "https://esi.evetech.net/latest"
