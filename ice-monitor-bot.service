@@ -1,0 +1,21 @@
+[Unit]
+Description=EVE Ice Monitor Discord Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=icebot
+WorkingDirectory=/opt/ice-monitor
+EnvironmentFile=/etc/ice-monitor/env
+Environment=ICE_STATE_FILE=/var/lib/ice-monitor/ice_monitor_state.json
+Environment=ESI_TOKEN_FILE=/var/lib/ice-monitor/esi_tokens.json
+ExecStart=/opt/ice-monitor/venv/bin/ice-monitor --bot
+Restart=always
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ice-monitor-bot
+
+[Install]
+WantedBy=multi-user.target
